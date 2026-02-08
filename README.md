@@ -1,5 +1,7 @@
 # RadiRec GUI
 
+<img src="gui_image.png" width="50%">
+
 radikoの番組を録音するクロスプラットフォーム(Windows/Mac/Linux)対応のGUIツールです。
 [rec_radiko_ts.sh](https://github.com/uru2/rec_radiko_ts) (作: uru氏) のロジックがベースです。
 radiko側のアップデートにより使えなくなる可能性があります。
