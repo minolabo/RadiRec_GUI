@@ -1,5 +1,5 @@
 #
-# RadiRec GUI v1.0
+# RadiRec GUI v1.1
 # Copyright (C) 2026 minolabo
 #
 # Based on rec_radiko_ts.sh by uru (https://github.com/uru2/rec_radiko_ts)
@@ -36,7 +36,7 @@ AUTHKEY_VALUE = 'bcd151073c03b352e1ef2fd66c32209da9ca0afa'
 class RadikoRecorderGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("RadiRec GUI v1.0")
+        self.root.title("RadiRec GUI v1.1")
         self.root.geometry("620x700")
 
         # Variables
@@ -48,6 +48,10 @@ class RadikoRecorderGUI:
         self.mail_var = tk.StringVar()
         self.pass_var = tk.StringVar()
         self.filename_template_var = tk.StringVar(value="{DATE}_{TIME}_{TITLE}")
+        
+        self.url_timeshift_var = tk.BooleanVar(value=False)
+        self.url_delay_var = tk.StringVar(value="0")
+        self.url_duration_var = tk.StringVar(value="60")
         
         self.stations_data = [] # List of (id, name, area_id)
         self.authtoken = None
@@ -68,6 +72,9 @@ class RadikoRecorderGUI:
                     self.mail_var.set(config.get('mail', ''))
                     self.pass_var.set(config.get('password', ''))
                     self.filename_template_var.set(config.get('template', "{DATE}_{TIME}_{TITLE}"))
+                    self.url_timeshift_var.set(config.get('url_timeshift', False))
+                    self.url_delay_var.set(config.get('url_delay', "0"))
+                    self.url_duration_var.set(config.get('url_duration', "60"))
             except Exception as e:
                 print(f"Config load error: {e}")
 
@@ -75,7 +82,10 @@ class RadikoRecorderGUI:
         config = {
             'mail': self.mail_var.get(),
             'password': self.pass_var.get(),
-            'template': self.filename_template_var.get()
+            'template': self.filename_template_var.get(),
+            'url_timeshift': self.url_timeshift_var.get(),
+            'url_delay': self.url_delay_var.get(),
+            'url_duration': self.url_duration_var.get()
         }
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -117,6 +127,20 @@ class RadikoRecorderGUI:
         ttk.Entry(self.frame_url, textvariable=self.url_var, width=50).grid(row=0, column=1, padx=5, pady=2)
         ttk.Button(self.frame_url, text="クリップボードから貼り付け", command=self.paste_url).grid(row=0, column=2, padx=5, pady=2)
 
+        # Time-shift options for URL
+        self.frame_url_ts = ttk.Frame(self.frame_url)
+        self.frame_url_ts.grid(row=1, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(self.frame_url_ts, text="時間指定を行う", variable=self.url_timeshift_var, command=self.toggle_url_timeshift).pack(side="left")
+        ttk.Label(self.frame_url_ts, text="  番組開始").pack(side="left")
+        self.entry_url_delay = ttk.Entry(self.frame_url_ts, textvariable=self.url_delay_var, width=5)
+        self.entry_url_delay.pack(side="left", padx=2)
+        ttk.Label(self.frame_url_ts, text="分後から").pack(side="left")
+        self.entry_url_duration = ttk.Entry(self.frame_url_ts, textvariable=self.url_duration_var, width=5)
+        self.entry_url_duration.pack(side="left", padx=2)
+        ttk.Label(self.frame_url_ts, text="分間録音").pack(side="left")
+        
+        self.toggle_url_timeshift()
+
         # Config / Naming Options
         frame_opts = ttk.LabelFrame(self.root, text="設定・オプション", padding=10)
         frame_opts.pack(fill="x", padx=10, pady=5)
@@ -131,15 +155,15 @@ class RadikoRecorderGUI:
         ttk.Entry(frame_opts, textvariable=self.filename_template_var, width=40).grid(row=2, column=1, sticky="w", padx=5, pady=2)
         ttk.Label(frame_opts, text="{DATE}{TIME}{TITLE}{STATION} が使用可能", font=("", 8), foreground="gray").grid(row=3, column=1, sticky="w", padx=5)
 
+        # Run Button
+        ttk.Button(self.root, text="録音開始", command=self.run_recording_thread).pack(pady=10)
+        
         # LOG
         frame_log = ttk.LabelFrame(self.root, text="実行ログ", padding=10)
         frame_log.pack(fill="both", expand=True, padx=10, pady=5)
         self.text_log = tk.Text(frame_log, height=12)
         self.text_log.pack(fill="both", expand=True)
 
-        # Run Button
-        ttk.Button(self.root, text="録音開始", command=self.run_recording_thread).pack(pady=10)
-        
         self.toggle_mode()
 
     def toggle_mode(self):
@@ -164,6 +188,11 @@ class RadikoRecorderGUI:
     def log(self, message):
         self.text_log.insert(tk.END, message + "\n")
         self.text_log.see(tk.END)
+
+    def toggle_url_timeshift(self):
+        state = "normal" if self.url_timeshift_var.get() else "disabled"
+        self.entry_url_delay.configure(state=state)
+        self.entry_url_duration.configure(state=state)
 
     def http_request(self, url, headers=None, data=None, method='GET'):
         if headers is None: headers = {}
@@ -349,11 +378,27 @@ class RadikoRecorderGUI:
                 if len(from_time) == 12: from_time += "00"
                 self.log(f"URL解析: {station_id}, {from_time}")
                 dt_start = datetime.datetime.strptime(from_time, "%Y%m%d%H%M%S")
-                # Length from API? for now 1 hour default if URL mode
-                dt_end = dt_start + datetime.timedelta(hours=1)
-                to_time = dt_end.strftime("%Y%m%d%H%M%S")
-            except:
-                self.log("URL解析エラー")
+                
+                # Time-shift logic for URL mode
+                if self.url_timeshift_var.get():
+                    try:
+                        delay = int(self.url_delay_var.get())
+                        duration = int(self.url_duration_var.get())
+                        dt_actual_start = dt_start + datetime.timedelta(minutes=delay)
+                        dt_actual_end = dt_actual_start + datetime.timedelta(minutes=duration)
+                        from_time = dt_actual_start.strftime("%Y%m%d%H%M%S")
+                        to_time = dt_actual_end.strftime("%Y%m%d%H%M%S")
+                        self.log(f"時間指定録音: {delay}分後から{duration}分間 (開始時刻: {from_time})")
+                    except ValueError:
+                        self.log("時間指定が無効なため、番組全体を録音します。")
+                        dt_end = dt_start + datetime.timedelta(hours=1)
+                        to_time = dt_end.strftime("%Y%m%d%H%M%S")
+                else:
+                    # Length from API? for now 1 hour default if URL mode
+                    dt_end = dt_start + datetime.timedelta(hours=1)
+                    to_time = dt_end.strftime("%Y%m%d%H%M%S")
+            except Exception as e:
+                self.log(f"URL解析エラー: {e}")
                 return
 
         # Fetch Title for naming
@@ -422,7 +467,7 @@ class RadikoRecorderGUI:
                 if path_bin:
                     ffmpeg_path = path_bin
             
-            self.log(f"FFmpeg path: {ffmpeg_path}")
+            # self.log(f"FFmpeg path: {ffmpeg_path}")
 
             lsid = secrets.token_hex(16)
             ffmpeg_headers = f"X-Radiko-Authtoken: {self.authtoken}\r\nX-Radiko-AreaId: {self.area_id}"
@@ -534,7 +579,7 @@ class RadikoRecorderGUI:
                 if os.path.exists(cf): os.remove(cf)
 
             if success:
-                self.log(f"録音成功: {os.path.basename(output_file)}")
+                self.log(f"録音成功: /{station_id}/{os.path.basename(output_file)}")
             else:
                 self.log("録音に失敗しました。")
 
